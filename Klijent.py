@@ -57,13 +57,16 @@ def recv_file():
         packet += buffer
     return packet
 
-def preview(file_name):
-    file_preview_screen = Toplevel(app_screen)
+def preview(file_name, screen=None):
+    if (screen is None):
+        screen = app_screen
+    file_preview_screen = Toplevel(screen)
     file_preview_screen.title = file_name
     file_preview_screen.geometry('500x350')
+
     file_preview_label = StringVar()
     file_preview_label.set('Downlaoding...')
-    Label(file_preview_screen, textvar=file_preview_label).pack()
+    Label(file_preview_screen, textvar=file_preview_label, justify = LEFT, wraplength=500).pack()
 
 
     send_msg('Choose file')
@@ -77,18 +80,31 @@ def preview(file_name):
     print('Is binary', is_file_binary)
 
     if (is_file_binary):
+        # https://core.tcl-lang.org/tk/tktview/bffa794b1b50745e0cf81c860b0bcbf36ccfb21a
+        # the above issue prevents from using Scrollbar widget
         file_preview_label.set(base64.b64encode(file))
     else:
         file_preview_label.set(file.decode())
 
-
-
-
 def app(choices, handlers, files_string = None):
     global app_screen
+    global file_number
+    global app_label_content
     app_screen = Toplevel(main_screen)
     app_screen.title("App")
-    app_screen.geometry("500x350")
+    app_screen.geometry("600x350")
+
+    app_label_content = StringVar()
+    app_label_content.set("")
+
+    app_screen.columnconfigure(0, minsize=100)
+    app_screen.columnconfigure(1, minsize=100)
+    app_screen.columnconfigure(2, minsize=100)
+    app_screen.columnconfigure(3, minsize=100)
+    app_screen.columnconfigure(4, minsize=100)
+
+    #TODO empty state
+    Label(app_screen, text = "Files:").grid(column=1, row=0 )
 
     if(files_string != None):
         files = json.loads(files_string)
@@ -98,9 +114,13 @@ def app(choices, handlers, files_string = None):
                 preview(file)
 
             return command
-
+        i = 1
         for f in files:
-            Button(app_screen, text=f, width=15, height=1, command=make_command(f)).pack()
+            Button(app_screen, text=f, width=15, height=1, command=make_command(f)).grid(column=1, row=i)
+            i = i+1
+        file_number = i
+    else:
+        file_number = 1
 
     def on_closing():
         send_msg('EXIT')
@@ -113,9 +133,12 @@ def app(choices, handlers, files_string = None):
             send_msg(choice)
             handler()
         return command
-
+    i=1
     for choice, handler  in zip(choices, handlers):
-        Button(app_screen, text=choice, width=15, height=1, command=make_command(choice, handler)).pack()
+        Button(app_screen, text=choice, width=15, height=1, command=make_command(choice, handler)).grid(column=3, row = i)
+        i = i+1
+    # TODO make selectable
+    Label(app_screen, textvariable = app_label_content, wraplength=100).grid(column = 3, row=10)
 
 # https://stackoverflow.com/a/7392391
 def is_binary(bytes):
@@ -134,6 +157,7 @@ def storage_full():
     Button(storage_full_screen, text="OK", command=delete_storage_full_screen).pack()
 
 def upload_file():
+    global file_number
     filename = filedialog.askopenfilename(initialdir="~", title="Select file")
 
     with open(filename, 'rb') as file:
@@ -145,7 +169,12 @@ def upload_file():
     status = get_msg()
 
     if(status == 'UPLOADED'):
-        Button(app_screen, text=name, width=15, height=1).pack()
+        def make_command(filename):
+            def command():
+                preview(filename)
+            return command
+        Button(app_screen, text=name, width=15, height=1, command = make_command(name)).grid(column = 1,row=file_number)
+        file_number = file_number +1
     else:
         storage_full()
 
@@ -153,10 +182,42 @@ def list_shared_with_me():
     pass
 
 def get_shareable_link():
-    pass
+    link = sock.recv(4096).decode()
+    app_label_content.set('{}'.format(link))
+
+def share_verification():
+    username_share = username_share_entry.get()
+    username_share_entry.delete(0,END)
+    sock.send(username_share.encode())
+    message = sock.recv(4096).decode()
+    if(message == 'NOT FOUND'):
+        label_share_with_user.set("User doesn\'t exist, try again")
+    else:
+        app_label_content.set('Successfully shared with user {}'.format(username_share))
+        share_user_screen.destroy()
+
 
 def share_with_user():
-    pass
+    global username_share_entry
+    global label_share_with_user
+    global share_user_screen
+    share_user_screen = Toplevel(app_screen)
+    share_user_screen.title("Share with user")
+    share_user_screen.geometry("250x150")
+
+    username_share = StringVar()
+    label_share_with_user = StringVar()
+    label_share_with_user.set("Enter user you want to share with")
+
+    Label(share_user_screen, textvariable = label_share_with_user).pack()
+    username_share_entry = Entry(share_user_screen, textvariable=username_share)
+    username_share_entry.pack()
+
+    button_share = Button(share_user_screen, state = 'disabled', text="OK", command=share_verification)
+    button_share.pack()
+
+    username_share.trace("w", make_check_empty(button_share, [username_share]))
+
 
 def create_folder():
     pass
@@ -188,14 +249,15 @@ def login_verification():
     password_login_entry.delete(0, END)
 
     message = get_msg()
-    files_string = get_msg()
 
     if(message == 'y'):
+        files_string = get_msg()
         login_screen.destroy()
         app(choices, handlers, files_string)
     elif(message == 'n'):
+        files_string = get_msg()
         login_screen.destroy()
-        app(choices[:5], handlers[:5], files_string)
+        app(choices[:4], handlers[:4], files_string)
     else:
         login_label.set('Username or password are not valid! Please try again :)')
 
@@ -230,24 +292,29 @@ def login():
     Label(login_screen, text="Username").pack()
     username_login_entry = Entry(login_screen, textvariable=username_verify)
     username_login_entry.pack()
+
     Label(login_screen, text="Password").pack()
     password_login_entry = Entry(login_screen, textvariable=password_verify, show='*')
     password_login_entry.pack()
-    Button(login_screen, text="Login", width=10, height=1, command=login_verification).pack()
+
+    button_login = Button(login_screen, text="Login", width=10, height=1, state='disabled', command=login_verification)
+    button_login.pack()
+
+    username_verify.trace("w", make_check_empty(button_login, [username_verify, password_verify]))
+    password_verify.trace("w", make_check_empty(button_login, [username_verify, password_verify]))
 
 def register_user():
     # get username and password
     username_info = username.get()
-    print(username_info)
-    send_msg(username_info)
     password_info = password.get()
-    print(password_info)
-    send_msg(password_info)
     is_premium_info = is_premium.get()
-    if(is_premium_info == 1):
+    if (is_premium_info == 1):
         is_premium_info = 'y'
     else:
         is_premium_info = 'n'
+
+    send_msg(username_info)
+    send_msg(password_info)
     send_msg(is_premium_info)
 
     # delete the entry afer registration button is pressed
@@ -316,18 +383,72 @@ def register():
     Checkbutton(register_screen, text="premium", variable=is_premium).pack()
 
     # Set register button
-    Button(register_screen, text="Register", width=10, height=1, command=register_user).pack()
+    button_register = Button(register_screen, text="Register", state = 'disabled', width=10, height=1, command=register_user)
+    button_register.pack()
 
+    username.trace("w", make_check_empty(button_register, [username, password]))
+    password.trace("w", make_check_empty(button_register, [username,password]))
+
+
+def access_via_link():
+    # get link
+    link_info = link_entry.get()
+    send_msg('Access via link')
+    sock.send(link_info.encode())
+    message = get_msg()
+    print(message)
+    if(message == 'NOT FOUND'):
+        link_error.set('Link not valid')
+    else:
+        preview_files_screen = Toplevel(main_screen)
+        preview_files_screen.title('Fake google drive')
+        preview_files_screen.geometry("250x250")
+
+        files_str = get_msg()
+        print(files_str)
+        files = json.loads(files_str)
+
+        def make_command(file):
+            def command():
+                preview(file, preview_files_screen)
+            return command
+
+        for f in files:
+            Button(preview_files_screen, text=f, width=15, height=1, command=make_command(f)).pack()
+
+        def on_closing():
+            send_msg('EXIT')
+            preview_files_screen.destroy()
+
+        preview_files_screen.protocol("WM_DELETE_WINDOW", on_closing)
+
+
+
+# https://stackoverflow.com/a/16688391
+def make_check_empty(button,stringvars):
+    def check_empty(*args):
+        state = 'normal'
+
+        for var in stringvars:
+            if var.get() == '':
+                state = 'disabled'
+
+        button.config(state=state)
+    return check_empty
 
 def main_account_screen():
     global main_screen
+    global link_entry
+    global  link_error
+
     main_screen = Tk()  # create a GUI window
     main_screen.geometry("500x250")
     main_screen.title('App')
 
     #set variables
     link = StringVar()
-
+    link_error = StringVar()
+    link_error.set("")
     # create a Form label
     Label(text="Welcome to fake google drive", width="300").pack()
 
@@ -341,6 +462,12 @@ def main_account_screen():
     Label(text="Access via link", width="300").pack()
     link_entry = Entry(main_screen, width="30", textvariable=link)
     link_entry.pack()
+    # create Go Button
+    button_go = Button(text='Go',width='15',state = 'disabled', command = access_via_link)
+    button_go.pack()
+    link_error_label = Label(textvariable = link_error)
+    link_error_label.pack()
+    link.trace('w',make_check_empty(button_go,[link]))
 
     main_screen.mainloop()  # start the GUI
 
@@ -348,147 +475,6 @@ def main_account_screen():
 main_account_screen()
 
 
-
-#
-# def app_menu():
-#     client_type = sock.recv(4096).decode()
-#     if(client_type == 'y'):
-#         choices = ['Upload','Choose file','Shared with me','Get shareable link','Share with user','Create folder', 'Rename folder','Move files','Delete folder']
-#     else:
-#         choices = ['Upload', 'Choose file', 'Shared with me', 'Get shareable link', 'Share with user']
-#     app_menu_choice = menu(choices)
-#     for i in range(len(choices)):
-#         if (app_menu_choice == str(i)):
-#             sock.send(choices[i].encode())
-#
-#
-#
-# def non_empty_input(input_str):
-#     input_res = input(input_str)
-#     if len(input_res) == 0:
-#         print('Please type something :(')
-#         return non_empty_input(input_str)
-#
-#     return input_res
-#
-#
-# def menu(menu_options):
-#     options_count = len(menu_options)
-#     for i in range(len(menu_options)):
-#         print('{}. {}'.format(i + 1, menu_options[i]))
-#
-#     print('{}. Exit'.format(options_count + 1))
-#
-#     choice = input()
-#
-#     while (int(choice) - 1 not in list(range(len(menu_options) + 1 ))):
-#         print('Invalid input. Try again :)')
-#         choice = input()
-#
-#     if (int(choice) == options_count + 1):
-#         exit()
-#
-#     return choice
-#
-#
-# # default manu when you run the app
-# def menu1():
-#     menu1_choice = menu(['Sign up', 'Sign in', 'Access via link'])
-#
-#     return menu1_choice
-#
-# def registration_handler():
-#     # sending data
-#     username = non_empty_input('Username: ')
-#     sock.send(username.encode())
-#     password = non_empty_input('Password: ')
-#     sock.send(password.encode())
-#     is_premium = non_empty_input('Do you want to be premium (y/n): ')
-#     if (is_premium == 'y'):
-#         is_premium = 'y'
-#     else:
-#         is_premium = 'n'
-#     sock.send(is_premium.encode())
-#     sign_in_result = (sock.recv(4096).decode())
-#     if (sign_in_result == 'registered'):
-#         print('{} successfully registered'.format(username))
-#         app_menu()
-#     else:
-#         print('User with {} username already exists! Try again'.format(username))
-#         registration_handler()
-#
-#
-# # sign up with option to go back
-# def sign_up():
-#     menu2_choice = menu(['Proceed to registration', 'Go back'])
-#
-#     if (menu2_choice == '1'):
-#         # informing service that client wants to register
-#         sock.sendall('register'.encode())
-#
-#         registration_handler()
-#
-#     # go back option
-#     else:
-#         welcome_menu()
-#
-# def login_handler():
-#     username = non_empty_input('Username: ')
-#     sock.send(username.encode())
-#     password = non_empty_input('Password: ')
-#     sock.send(password.encode())
-#     sign_up_result = (sock.recv(4096).decode())
-#     if(sign_up_result == 'OK'):
-#         print('Welcome {}'.format(username))
-#         app_menu()
-#     else:
-#         print('Username or password are not valid! Please try again :)')
-#         login_handler()
-#
-# # sign in menu
-# def sign_in():
-#     sign_in_choice = menu(['Proceed to login', 'Go back'])
-#
-#     if (sign_in_choice == '1'):
-#
-#         # informing service that client wants to login
-#         sock.send('login'.encode())
-#
-#         login_handler()
-#
-#     # go back option
-#     else:
-#         welcome_menu()
-#
-# # preview with link menu
-# def enter_link():
-#
-#     link_choice = menu(['Proceed', 'Go back'])
-#
-#     if (link_choice == '1'):
-#
-#         # informing service that client wants to see someones drive
-#         sock.sendall('view drive'.encode())
-#
-#         link = input('Enter link: ')
-#
-#     # go back option
-#     else:
-#         welcome_menu()
-#
-# def welcome_menu():
-#     menu1_choice = menu1()
-#     if (menu1_choice == '1'):
-#         sign_up()
-#     if(menu1_choice == '2'):
-#         sign_in()
-#     if(menu1_choice == '3'):
-#         enter_link()
-#
-#
-#
-# welcome_menu()
-#
-
-
 #TODO memorry error exception
+#TODO multiple label onclick
+# TODO ispisati get shareable link
