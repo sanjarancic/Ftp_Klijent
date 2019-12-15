@@ -77,7 +77,6 @@ def preview(file_name, screen=None):
 
     is_file_binary = is_binary(file)
 
-    print('Is binary', is_file_binary)
 
     if (is_file_binary):
         # https://core.tcl-lang.org/tk/tktview/bffa794b1b50745e0cf81c860b0bcbf36ccfb21a
@@ -89,13 +88,16 @@ def preview(file_name, screen=None):
 def app(choices, handlers, files_string = None):
     global app_screen
     global file_number
-    global app_label_content
+    global var
     app_screen = Toplevel(main_screen)
     app_screen.title("App")
     app_screen.geometry("600x350")
 
-    app_label_content = StringVar()
-    app_label_content.set("")
+    var = StringVar()
+    var.set('')
+
+    file_label = StringVar()
+    file_label.set("")
 
     app_screen.columnconfigure(0, minsize=100)
     app_screen.columnconfigure(1, minsize=100)
@@ -103,12 +105,14 @@ def app(choices, handlers, files_string = None):
     app_screen.columnconfigure(3, minsize=100)
     app_screen.columnconfigure(4, minsize=100)
 
-    #TODO empty state
-    Label(app_screen, text = "Files:").grid(column=1, row=0 )
+    Label(app_screen, textvariable = file_label).grid(column=1, row=0)
 
     if(files_string != None):
         files = json.loads(files_string)
-
+        if not files:
+            file_label.set('Drive is empty')
+        else:
+            file_label.set('Files:')
         def make_command(file):
             def command():
                 preview(file)
@@ -121,6 +125,7 @@ def app(choices, handlers, files_string = None):
         file_number = i
     else:
         file_number = 1
+        file_label.set('Drive is empty')
 
     def on_closing():
         send_msg('EXIT')
@@ -137,8 +142,10 @@ def app(choices, handlers, files_string = None):
     for choice, handler  in zip(choices, handlers):
         Button(app_screen, text=choice, width=15, height=1, command=make_command(choice, handler)).grid(column=3, row = i)
         i = i+1
-    # TODO make selectable
-    Label(app_screen, textvariable = app_label_content, wraplength=100).grid(column = 3, row=10)
+
+    link_field = Entry(app_screen, state='readonly',width = '35', readonlybackground='#d9d9d9', fg='black')
+    link_field.config(textvariable=var, relief='flat')
+    link_field.grid(column = 2, columnspan=2, row=10)
 
 # https://stackoverflow.com/a/7392391
 def is_binary(bytes):
@@ -157,6 +164,7 @@ def storage_full():
     Button(storage_full_screen, text="OK", command=delete_storage_full_screen).pack()
 
 def upload_file():
+    # TODO handle cancel upload
     global file_number
     filename = filedialog.askopenfilename(initialdir="~", title="Select file")
 
@@ -165,7 +173,9 @@ def upload_file():
         send_file(content)
 
     name = filename.split('/')[-1]
-    send_msg(name)
+    # send_msg(name)
+    sock.recv(4096)
+    sock.send(name.encode())
     status = get_msg()
 
     if(status == 'UPLOADED'):
@@ -179,11 +189,33 @@ def upload_file():
         storage_full()
 
 def list_shared_with_me():
-    pass
+    users_who_shared_with_me = sock.recv(4096).decode()
+    users = json.loads(users_who_shared_with_me)
+
+    shared_with_me_screen = Toplevel(app_screen)
+    shared_with_me_screen.title("Shared with me")
+    shared_with_me_screen.geometry("400x400")
+
+    for user in users:
+
+        def make_select_drive(user):
+            def select_drive():
+                send_msg('see user\'s drive')
+                sock.send(user.encode())
+                preview_drive()
+            return select_drive
+
+        Button(shared_with_me_screen, text=user, command = make_select_drive(user)).pack()
+
+    def on_closing():
+        send_msg('EXIT')
+        shared_with_me_screen.destroy()
+
+    shared_with_me_screen.protocol("WM_DELETE_WINDOW", on_closing)
 
 def get_shareable_link():
-    link = sock.recv(4096).decode()
-    app_label_content.set('{}'.format(link))
+    link = get_msg()
+    var.set('{}'.format(link))
 
 def share_verification():
     username_share = username_share_entry.get()
@@ -193,7 +225,7 @@ def share_verification():
     if(message == 'NOT FOUND'):
         label_share_with_user.set("User doesn\'t exist, try again")
     else:
-        app_label_content.set('Successfully shared with user {}'.format(username_share))
+        var.set('Successfully shared with user {}'.format(username_share))
         share_user_screen.destroy()
 
 
@@ -321,9 +353,7 @@ def register_user():
     username_entry.delete(0, END)
     password_entry.delete(0, END)
 
-    print('waiting for server response')
     status = get_msg()
-    print('Status: {}'.format(status))
 
     if(status == 'registered'):
         register_screen.destroy()
@@ -389,6 +419,29 @@ def register():
     username.trace("w", make_check_empty(button_register, [username, password]))
     password.trace("w", make_check_empty(button_register, [username,password]))
 
+def preview_drive():
+    preview_files_screen = Toplevel(main_screen)
+    preview_files_screen.title('Fake google drive')
+    preview_files_screen.geometry("250x250")
+
+    files_str = get_msg()
+    files = json.loads(files_str)
+
+    def make_command(file):
+        def command():
+            preview(file, preview_files_screen)
+
+        return command
+
+    for f in files:
+        Button(preview_files_screen, text=f, width=15, height=1, command=make_command(f)).pack()
+
+    def on_closing():
+        send_msg('EXIT')
+        preview_files_screen.destroy()
+
+    preview_files_screen.protocol("WM_DELETE_WINDOW", on_closing)
+
 
 def access_via_link():
     # get link
@@ -396,31 +449,10 @@ def access_via_link():
     send_msg('Access via link')
     sock.send(link_info.encode())
     message = get_msg()
-    print(message)
     if(message == 'NOT FOUND'):
         link_error.set('Link not valid')
     else:
-        preview_files_screen = Toplevel(main_screen)
-        preview_files_screen.title('Fake google drive')
-        preview_files_screen.geometry("250x250")
-
-        files_str = get_msg()
-        print(files_str)
-        files = json.loads(files_str)
-
-        def make_command(file):
-            def command():
-                preview(file, preview_files_screen)
-            return command
-
-        for f in files:
-            Button(preview_files_screen, text=f, width=15, height=1, command=make_command(f)).pack()
-
-        def on_closing():
-            send_msg('EXIT')
-            preview_files_screen.destroy()
-
-        preview_files_screen.protocol("WM_DELETE_WINDOW", on_closing)
+        preview_drive()
 
 
 
@@ -476,5 +508,4 @@ main_account_screen()
 
 
 #TODO memorry error exception
-#TODO multiple label onclick
-# TODO ispisati get shareable link
+#TODO multiple label onclick ... nisam sigurna da to postoji negde i dalje...we'll see :)
