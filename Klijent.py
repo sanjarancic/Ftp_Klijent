@@ -65,37 +65,64 @@ def preview(file_name, screen=None):
     file_preview_screen.geometry('500x350')
 
     file_preview_label = StringVar()
-    file_preview_label.set('Downlaoding...')
     Label(file_preview_screen, textvar=file_preview_label, justify = LEFT, wraplength=500).pack()
-
 
     send_msg('Choose file')
     print('Sending file name', file_name)
+
     sock.send(file_name.encode())
 
-    file = recv_file()
+    # if it's a directory
+    if (file_name[-1] == '/'):
+       dir_name = file_name
+       files = json.loads(sock.recv(4096).decode())
 
-    is_file_binary = is_binary(file)
+       def make_command(file):
+           def command():
+               preview(file)
 
+           return command
 
-    if (is_file_binary):
-        # https://core.tcl-lang.org/tk/tktview/bffa794b1b50745e0cf81c860b0bcbf36ccfb21a
-        # the above issue prevents from using Scrollbar widget
-        file_preview_label.set(base64.b64encode(file))
+       for f in files:
+           Button(file_preview_screen, text=f, width=15, height=1, command=make_command(dir_name + f)).pack()
     else:
-        file_preview_label.set(file.decode())
+        file_preview_label.set('Downloading...')
+        file = recv_file()
 
-def app(choices, handlers, files_string = None):
+        is_file_binary = is_binary(file)
+
+        if (is_file_binary):
+            # https://core.tcl-lang.org/tk/tktview/bffa794b1b50745e0cf81c860b0bcbf36ccfb21a
+            # the above issue prevents from using Scrollbar widget
+            file_preview_label.set(base64.b64encode(file))
+        else:
+            file_preview_label.set(file.decode())
+
+def app(choices, handlers, screen=None, current_dir='/'):
     global app_screen
     global file_number
     global var
-    app_screen = Toplevel(main_screen)
+    global current_directory
+    global file_buttons
+    global files
+
+    if screen == None:
+        current_directory = '/'
+        screen = main_screen
+        app_screen_prev = None
+        file_buttons = {}
+    else:
+        app_screen_prev = app_screen
+    # keep previous screen in memory
+    print(current_directory)
+
+
+    app_screen = Toplevel(screen)
     app_screen.title("App")
     app_screen.geometry("600x350")
 
     var = StringVar()
     var.set('')
-
     file_label = StringVar()
     file_label.set("")
 
@@ -105,31 +132,49 @@ def app(choices, handlers, files_string = None):
     app_screen.columnconfigure(3, minsize=100)
     app_screen.columnconfigure(4, minsize=100)
 
+    send_msg('Get Files')
+    sock.send(current_dir.encode())
+    files_string = get_msg()
+
+    print(files_string)
+
     Label(app_screen, textvariable = file_label).grid(column=1, row=0)
 
-    if(files_string != None):
-        files = json.loads(files_string)
-        if not files:
-            file_label.set('Drive is empty')
-        else:
-            file_label.set('Files:')
-        def make_command(file):
-            def command():
-                preview(file)
-
-            return command
-        i = 1
-        for f in files:
-            Button(app_screen, text=f, width=15, height=1, command=make_command(f)).grid(column=1, row=i)
-            i = i+1
-        file_number = i
-    else:
+    files = json.loads(files_string)
+    if not files:
+        file_label.set('Empty')
         file_number = 1
-        file_label.set('Drive is empty')
+    else:
+        file_label.set('Files:')
+    def make_command(file):
+        def command():
+            global current_directory
+            if file[-1] == '/':
+                current_directory = current_dir + file
+                app(choices, handlers, app_screen, current_directory)
+            else:
+                preview(current_dir + file)
+
+        return command
+    i = 1
+    for f in files:
+        n = StringVar()
+        n.set(f)
+        btn = Button(app_screen, textvariable=n, width=15, height=1, command=make_command(f))
+        btn.grid(column=1, row=i)
+        file_buttons[current_dir + f] = [btn, n]
+        i = i+1
+    file_number = i
+
 
     def on_closing():
+        global app_screen, current_directory
         send_msg('EXIT')
         app_screen.destroy()
+
+        if(app_screen_prev is not None):
+            current_directory = '/'.join(current_directory.split('/')[:-2]) + '/'
+            app_screen = app_screen_prev
 
     app_screen.protocol("WM_DELETE_WINDOW", on_closing)
 
@@ -173,9 +218,9 @@ def upload_file():
         send_file(content)
 
     name = filename.split('/')[-1]
-    # send_msg(name)
     sock.recv(4096)
-    sock.send(name.encode())
+    sock.send('{}{}'.format(current_directory, name).encode())
+    print('{}{}'.format(current_directory, name))
     status = get_msg()
 
     if(status == 'UPLOADED'):
@@ -183,7 +228,11 @@ def upload_file():
             def command():
                 preview(filename)
             return command
-        Button(app_screen, text=name, width=15, height=1, command = make_command(name)).grid(column = 1,row=file_number)
+        n = StringVar()
+        n.set(name)
+        btn = Button(app_screen, textvariable=n, width=15, height=1, command = make_command(name))
+        btn.grid(column = 1,row=file_number)
+        file_buttons[current_directory + name] = [btn,n]
         file_number = file_number +1
     else:
         storage_full()
@@ -214,6 +263,7 @@ def list_shared_with_me():
     shared_with_me_screen.protocol("WM_DELETE_WINDOW", on_closing)
 
 def get_shareable_link():
+    sock.send('salji'.encode())
     link = get_msg()
     var.set('{}'.format(link))
 
@@ -251,17 +301,152 @@ def share_with_user():
     username_share.trace("w", make_check_empty(button_share, [username_share]))
 
 
+def create_folder_logic():
+    global file_number
+    folder_name = create_folder_entry.get() + '/'
+    sock.send('{}{}'.format(current_directory,folder_name).encode())
+    message = sock.recv(4096).decode()
+    if (message == 'Successfull'):
+        var.set('Successfull')
+        def make_command(filename):
+            def command():
+                app(choices, handlers, app_screen, current_directory + filename)
+            return command
+        n = StringVar()
+        n.set(folder_name)
+        btn = Button(app_screen, textvariable=n, width=15, height=1, command = make_command(folder_name))
+        btn.grid(column=1, row=file_number)
+        file_buttons[current_directory + folder_name] = []
+        file_buttons[current_directory + folder_name].append(btn)
+        file_buttons[current_directory + folder_name].append(n)
+
+        file_number = file_number +1
+    else:
+        var.set('Folder already exists :(')
+    create_folder_screen.destroy()
+
+
 def create_folder():
-    pass
+    global create_folder_screen
+    global create_folder_entry
+    folder_n = StringVar()
+    create_folder_screen = Toplevel(app_screen)
+    create_folder_screen.title("Create folder")
+    create_folder_screen.geometry("400x150")
+    label_create_folder = StringVar()
+    label_create_folder.set("Enter the name of the folder you want to create")
+    Label(create_folder_screen, textvariable = label_create_folder).pack()
+    create_folder_entry = Entry(create_folder_screen, textvariable=folder_n)
+    create_folder_entry.pack()
+    button_create = Button(create_folder_screen, state='disabled', text="OK", command=create_folder_logic)
+    button_create.pack()
+    folder_n.trace("w", make_check_empty(button_create, [folder_n]))
+
+    def on_closing():
+        send_msg('EXIT')
+        create_folder_screen.destroy()
+
+    create_folder_screen.protocol("WM_DELETE_WINDOW", on_closing)
+
+
+def rename_folder_logic():
+    old_name = rename_folder_entry.get() + '/'
+    new_name = new_name_entry.get() + '/'
+    send_msg(current_directory)
+    send_msg(old_name)
+    send_msg(new_name)
+    message = get_msg()
+    if(message == 'not found'):
+        var.set('Folder doesn\'t exist in this folder')
+    elif message=='found':
+        var.set('Successfully renamed folder {} to {}'.format(old_name,new_name))
+        print(file_buttons)
+        file_buttons[current_directory + old_name][1].set(new_name)
+        file_buttons[current_directory + new_name] = file_buttons[current_directory + old_name]
+        del file_buttons[current_directory + old_name]
+    else:
+        var.set('Name is taken')
+    rename_folder_screen.destroy()
+
 
 def rename_folder():
-    pass
+    global rename_folder_screen
+    global rename_folder_entry
+    global new_name_entry
+    folder_old = StringVar()
+    folder_new = StringVar()
+    rename_folder_screen = Toplevel(app_screen)
+    rename_folder_screen.title("Rename Folder")
+    rename_folder_screen.geometry("400x150")
+
+    label_rename_folder = StringVar()
+    label_rename_folder.set("Enter the name of the folder you want to rename")
+    Label(rename_folder_screen, textvariable=label_rename_folder).pack()
+    rename_folder_entry = Entry(rename_folder_screen, textvariable=folder_old)
+    rename_folder_entry.pack()
+
+    new_name_label = StringVar()
+    new_name_label.set("Enter new name")
+    Label(rename_folder_screen, textvariable=new_name_label).pack()
+    new_name_entry = Entry(rename_folder_screen, textvariable=folder_new)
+    new_name_entry.pack()
+
+    button_rename = Button(rename_folder_screen, state='disabled', text="OK", command=rename_folder_logic)
+    button_rename.pack()
+
+    folder_old.trace("w", make_check_empty(button_rename, [folder_old]))
+    folder_new.trace("w",make_check_empty(button_rename,[folder_new]))
+
+    def on_closing():
+        send_msg('EXIT')
+        rename_folder_screen.destroy()
+
+    rename_folder_screen.protocol("WM_DELETE_WINDOW", on_closing)
 
 def move_files():
     pass
 
+def delete_folder_logic():
+    folder_name = delete_folder_entry.get() + '/'
+    send_msg(current_directory)
+    sock.send(folder_name.encode())
+
+    message = get_msg()
+    if message=='not found':
+        var.set('Folder doesn\'t exist in this folder')
+    else:
+        status = get_msg()
+        if status == 'deleted':
+            var.set('Folder successfully deleted')
+            file_buttons[current_directory + folder_name][0].destroy()
+        else:
+            var.set('Folder is not empty!')
+
+    delete_folder_screen.destroy()
+
+
 def delete_folder():
-    pass
+    global delete_folder_screen
+    global delete_folder_entry
+    folder_n = StringVar()
+    delete_folder_screen = Toplevel(app_screen)
+    delete_folder_screen.title("Delete folder")
+    delete_folder_screen.geometry("400x150")
+    label_delete_folder = StringVar()
+    label_delete_folder.set("Enter the name of the folder you want to delete")
+    Label(delete_folder_screen, textvariable=label_delete_folder).pack()
+    delete_folder_entry = Entry(delete_folder_screen, textvariable=folder_n)
+    delete_folder_entry.pack()
+    button_delete = Button(delete_folder_screen, state='disabled', text="OK", command=delete_folder_logic)
+    button_delete.pack()
+    folder_n.trace("w", make_check_empty(button_delete, [folder_n]))
+
+    def on_closing():
+        send_msg('EXIT')
+        delete_folder_screen.destroy()
+
+    delete_folder_screen.protocol("WM_DELETE_WINDOW", on_closing)
+
 
 handlers = [upload_file, list_shared_with_me, get_shareable_link, share_with_user,
                            create_folder, rename_folder, move_files, delete_folder]
@@ -283,13 +468,11 @@ def login_verification():
     message = get_msg()
 
     if(message == 'y'):
-        files_string = get_msg()
         login_screen.destroy()
-        app(choices, handlers, files_string)
+        app(choices, handlers)
     elif(message == 'n'):
-        files_string = get_msg()
         login_screen.destroy()
-        app(choices[:4], handlers[:4], files_string)
+        app(choices[:4], handlers[:4])
     else:
         login_label.set('Username or password are not valid! Please try again :)')
 
